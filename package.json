@@ -1,0 +1,51 @@
+{
+  "name": "@praise25/x-feed-mcp",
+  "version": "0.1.0",
+  "description": "Least-privilege, read-only MCP server that returns recent tweets from a single X (Twitter) List, using a cookie-derived API key. No posting, no DMs, no following, no writes of any kind.",
+  "author": "Praise Taiwo",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "x-feed-mcp": "dist/index.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "SECURITY.md",
+    "LICENSE",
+    ".env.example"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "test": "node --import tsx --test test/**/*.test.ts",
+    "test:feed": "tsx scripts/test-feed.ts",
+    "test:users": "tsx scripts/test-users.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "twitter",
+    "x",
+    "list",
+    "read-only"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "rettiwt-api": "^7.1.2",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

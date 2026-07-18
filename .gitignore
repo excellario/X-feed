@@ -1,0 +1,15 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Build output
+dist/
+
+# Dependencies
+node_modules/
+
+# Logs and OS cruft
+*.log
+npm-debug.log*
+.DS_Store

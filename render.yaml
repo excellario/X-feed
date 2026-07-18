@@ -1,0 +1,22 @@
+# Render blueprint for the read-only X-List MCP server (HTTP transport).
+# Secrets are NOT stored here — set them in the Render dashboard (sync: false).
+services:
+  - type: web
+    name: x-feed-mcp
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: MCP_TRANSPORT
+        value: http
+      - key: NODE_VERSION
+        value: "20"
+      # Secrets: set these in the Render dashboard.
+      - key: MCP_AUTH_TOKEN
+        sync: false
+      - key: X_API_KEY
+        sync: false
+      - key: X_HANDLES
+        sync: false

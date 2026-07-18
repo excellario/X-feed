@@ -1,0 +1,11 @@
+# Never publish secrets or dev-only material to npm.
+.env
+.env.*
+!.env.example
+
+src/
+test/
+scripts/
+tsconfig.json
+*.tsbuildinfo
+.DS_Store
