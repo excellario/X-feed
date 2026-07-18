@@ -18,5 +18,7 @@ services:
         sync: false
       - key: X_API_KEY
         sync: false
-      - key: X_HANDLES
-        sync: false
+      # X_HANDLES is intentionally NOT set here. Handles are passed dynamically
+      # by the caller (the scheduled routine) on each get_recent_tweets call, so
+      # the tracked set can grow without redeploying. Set X_HANDLES only if you
+      # want a static fallback for calls that omit handles.

@@ -1,74 +1,76 @@
 # x-feed-mcp
 
-A least-privilege, **read-only** [Model Context Protocol](https://modelcontextprotocol.io) server that returns recent tweets from a **single X (Twitter) List**.
+A least-privilege, **read-only** [Model Context Protocol](https://modelcontextprotocol.io) server that returns recent tweets from a set of tracked X (Twitter) accounts.
 
-It exposes **one tool**, `get_list_tweets`, and nothing else:
+It exposes **one tool**, `get_recent_tweets`, and nothing else:
 
-- It **can** read the most recent tweets from a List you control, using a logged-in session.
-- It **cannot** post, reply, like, follow, DM, read your home timeline, or write anything. Only List reading is implemented.
+- It **can** read the most recent tweets from a set of handles, using a logged-in session.
+- It **cannot** post, reply, like, follow, DM, read your home timeline, or write anything. Only reading tracked handles is implemented.
 
-It authenticates with a **cookie-derived API key** (via [rettiwt-api](https://github.com/Rishikant181/Rettiwt-API)), no paid X API tier, and, importantly, **no automated password login**: you log in by hand once and encode the resulting cookies.
+The tracked handles are **passed dynamically by the caller** on each call, so the set can grow over time without redeploying. It authenticates with a **cookie-derived API key** (via [rettiwt-api](https://github.com/Rishikant181/Rettiwt-API)), no paid X API tier, and, importantly, **no automated password login**: you log in by hand once and encode the resulting cookies.
 
 ## Honest limitations (read before relying on it)
 
 - **Against X's Terms of Service.** Programmatic access via session cookies breaks X's ToS. Use a **dedicated throwaway account**, never your personal one; expect it to be flagged/banned eventually.
-- **Cookies expire.** The session dies periodically (days to weeks, sooner if flagged). When it does, the tool returns a clear "session expired" error and you must **log in again, regenerate `X_API_KEY`, and update it**. So this is low-maintenance, not zero-maintenance.
+- **Cookies expire.** The session dies periodically (days to weeks, sooner if flagged). When it does, the tool returns a clear "session expired" error and you must **log in again, regenerate `X_API_KEY`, and update it**. Low-maintenance, not zero-maintenance.
 - **Brittle upstream.** It depends on X's internal endpoints via `rettiwt-api`; X changes break it until the library updates.
 
-If you need durability, prefer official RSS/news feeds. This server is the pragmatic option when you specifically want a curated X List and accept the upkeep.
+If you need durability, prefer official RSS/news feeds. This server is the pragmatic option when you specifically want to read a curated set of X accounts and accept the upkeep.
 
 ## Requirements
 
 - Node.js 20+.
-- A **dedicated** X account, logged in, with a List of the accounts to track.
+- A **dedicated** X account, logged in.
 
 ## Configuration
 
 | Variable | Required | Description |
 | --- | --- | --- |
 | `X_API_KEY` | Yes | base64 of your account cookies (`auth_token`, `ct0`, `twid`). See below. |
-| `X_LIST_ID` | No | Default numeric List ID (from `x.com/i/lists/<ID>`). |
-| `MCP_TRANSPORT` | For remote | `stdio` (default) or `http`. |
-| `MCP_AUTH_TOKEN` | For `http` | Bearer secret guarding the HTTP endpoint. |
-| `PORT` | No | HTTP port (Render sets it automatically). |
-| `KEEPALIVE_URL` / `KEEPALIVE_MINUTES` | No | Self-ping to keep a free host awake (auto on Render). |
+| `X_HANDLES` | No | Optional static fallback set of handles (comma/space separated, `@` optional) used only when a call omits `handles`. Usually left unset so handles are passed dynamically. |
 
-### Generating `X_API_KEY` (no password)
+For remote (HTTP) deployment, also: `MCP_TRANSPORT=http`, `MCP_AUTH_TOKEN` (bearer secret), optional `PORT`, and optional keepalive (`KEEPALIVE_URL` / `RENDER_EXTERNAL_URL`, `KEEPALIVE_MINUTES`).
 
-1. Log into your **dedicated** X account in a browser.
-2. DevTools → Application → Cookies → copy `auth_token`, `ct0`, `twid`.
-3. In the browser console, run:
-   ```js
-   btoa("auth_token=<AUTH_TOKEN>;ct0=<CT0>;twid=<TWID>;")
-   ```
-4. The output is your `X_API_KEY`. It grants full access to that account, treat it as a secret.
+### Generating `X_API_KEY`
 
-## The tool: `get_list_tweets`
+Log into your **dedicated** account, open the browser console, and run:
+
+```js
+btoa("auth_token=YOUR_AUTH_TOKEN;ct0=YOUR_CT0;twid=YOUR_TWID;")
+```
+
+Get each value from DevTools → Application → Cookies → `https://x.com` (`auth_token` ~40 chars, `ct0` long, `twid` looks like `u%3D<userid>`). The console prints a long base64 string, that is your `X_API_KEY` (a few hundred characters). It grants full access to that account, so keep it to the throwaway and never commit it.
+
+## The tool: `get_recent_tweets`
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `listId` | string | Optional if `X_LIST_ID` is set | Numeric List ID. |
-| `count` | number | No | How many recent tweets (1-100). Default 20. |
+| `handles` | string[] | Optional if `X_HANDLES` is set | Handles to fetch (with or without `@`). Pass the current set here to keep it dynamic. |
+| `count` | number | No | How many merged tweets to return, newest first (1-100). Default 30. |
+| `includeReplies` | boolean | No | Include `@`-replies. Default false (replies are usually noise for a digest). |
 
-Returns a compact text list of recent tweets (author, handle, text, timestamp, URL) for a model to summarise. On an expired session it returns a distinguishable `auth` error telling you to refresh the key.
+Handles are fetched in small batches (X caps `from:` operators per search query), merged, de-duplicated, and sorted newest-first. Output is a compact text list of author, timestamp, text, and URL.
 
 ## Remote deployment (HTTP transport)
 
-Same shape as any MCP HTTP server. Set `MCP_TRANSPORT=http` and `MCP_AUTH_TOKEN`; the endpoint is `POST /mcp` (bearer auth) or `POST /mcp/<token>` (token in path, for connector UIs that cannot send a header). `GET /health` is open for keepalive/health checks. A `render.yaml` blueprint is included; set all secrets in the host dashboard, never in the repo.
+Run as an always-on service and add it to Claude as a custom connector. The `/mcp` endpoint requires a bearer token (`MCP_AUTH_TOKEN`), reachable as an `Authorization: Bearer` header **or** as `/mcp/<token>` in the path for connector UIs that only take a URL. `GET /health` is unauthenticated (health check + keepalive). A [`render.yaml`](render.yaml) blueprint is included; set secrets in the host dashboard, never in the file.
 
 ## Local development
 
 ```bash
 npm install
 npm run build
-npm test                 # unit + HTTP auth tests (no live X calls)
-npm run test:feed        # live: fetch your List (needs a valid X_API_KEY)
-npm run test:feed -- 1234567890 10
+npm test                                   # unit + HTTP tests (no network)
+npm run test:feed                          # live: default handles
+npm run test:feed -- 20 @sama @OpenAI      # live: count + explicit handles
+npm run test:users -- @sama @AnthropicAI   # live: probe specific handles
 ```
+
+The live scripts hit real X endpoints and need a valid `X_API_KEY`.
 
 ## Security
 
-See [SECURITY.md](SECURITY.md): read-only surface, cookie-key handling, HTTP auth, and revocation (logging the dedicated account out invalidates the key).
+See [SECURITY.md](SECURITY.md). The cookie key is read only from the environment, never logged, and grants full access to the connected account, keep it on a dedicated throwaway. Revoking it (log the account out of all sessions) immediately disables this integration.
 
 ## License
 
