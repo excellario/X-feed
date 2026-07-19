@@ -93,6 +93,27 @@ export function startHttpServer(config: Config, opts: HttpOptions): Server {
       return;
     }
 
+    // Diagnostic probe (token-guarded): GET /probe/<token>. Tests which X data
+    // paths work from this host's IP. See probe.ts.
+    if (req.method === "GET" && url.startsWith("/probe/")) {
+      const segment = url.slice("/probe/".length);
+      let decoded: string | null;
+      try {
+        decoded = decodeURIComponent(segment);
+      } catch {
+        decoded = null;
+      }
+      if (decoded === null || !tokensMatch(decoded, opts.authToken)) {
+        sendJsonError(res, 401, -32001, "Unauthorized.");
+        return;
+      }
+      const { runProbes } = await import("./probe.js");
+      const results = await runProbes(config.apiKey);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(results, null, 2));
+      return;
+    }
+
     // The MCP endpoint is reachable two ways:
     //   /mcp          -> authorize via `Authorization: Bearer <token>` header
     //   /mcp/<token>  -> authorize via a secret in the path, for connector UIs
