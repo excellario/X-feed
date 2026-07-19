@@ -10,7 +10,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { Config } from "./config.js";
-import { XClient, FeedTweet } from "./xclient.js";
+import { XClient } from "./xclient.js";
+import { FeedTweet } from "./types.js";
 
 export const SERVER_NAME = "x-feed-mcp";
 export const SERVER_VERSION = "0.1.0";
@@ -34,7 +35,11 @@ function formatTweets(tweets: FeedTweet[]): string {
  * @param config validated configuration
  */
 export function buildServer(config: Config): McpServer {
-  const client = new XClient(config.apiKey, config.defaultHandles);
+  const client = new XClient(
+    config.apiKey,
+    config.defaultHandles,
+    config.nitterInstances,
+  );
 
   const server = new McpServer({
     name: SERVER_NAME,
@@ -88,7 +93,11 @@ export function buildServer(config: Config): McpServer {
               type: "text",
               text:
                 `Fetched ${result.tweets.length} recent tweet(s) from ` +
-                `${result.handles.length} tracked handle(s):\n\n` +
+                `${result.handles.length} tracked handle(s) via ${result.source}` +
+                (result.missed.length
+                  ? ` (no data for: ${result.missed.join(", ")})`
+                  : "") +
+                `:\n\n` +
                 formatTweets(result.tweets),
             },
           ],

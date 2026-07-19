@@ -8,10 +8,15 @@
  */
 
 export interface Config {
-  /** rettiwt-api API key: base64 of the account cookies. */
-  apiKey: string;
+  /**
+   * OPTIONAL rettiwt-api key (base64 cookies), used only as a fallback source.
+   * The primary source is Nitter RSS, which needs no credentials at all.
+   */
+  apiKey?: string;
   /** Default set of handles (without @) to fetch when a call omits them. */
   defaultHandles: string[];
+  /** Nitter instances to try in order (NITTER_INSTANCES, comma-separated). */
+  nitterInstances?: string[];
 }
 
 /** Thrown when required configuration is missing or malformed. */
@@ -37,16 +42,15 @@ export function parseHandles(raw: string | undefined): string[] {
  * @param env the environment source (defaults to process.env)
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const apiKey = env.X_API_KEY?.trim();
+  const apiKey = env.X_API_KEY?.trim() || undefined;
   const defaultHandles = parseHandles(env.X_HANDLES);
+  const nitterInstances = env.NITTER_INSTANCES?.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 
-  if (!apiKey) {
-    throw new ConfigError(
-      "Missing required environment variable: X_API_KEY. It is the base64 " +
-        "encoding of your dedicated account's cookies (auth_token, ct0, twid). " +
-        "See .env.example / README for how to generate it.",
-    );
-  }
-
-  return { apiKey, defaultHandles };
+  return {
+    apiKey,
+    defaultHandles,
+    nitterInstances: nitterInstances?.length ? nitterInstances : undefined,
+  };
 }

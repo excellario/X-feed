@@ -1,68 +1,41 @@
 /**
- * Thin, READ-ONLY client over rettiwt-api. It fetches recent tweets from a set
- * of tracked handles and nothing else.
+ * Thin, READ-ONLY client that fetches recent tweets from a set of tracked
+ * handles and nothing else.
  *
- * Deliberately exposes only reading. There is no method here to post, reply,
- * like, follow, DM, or otherwise write, keeping this a least-privilege consumer
- * of a logged-in session.
+ * Source order:
+ *   1. Nitter RSS (no login, no cookies, no account at risk) — primary.
+ *   2. rettiwt cookie session (X_API_KEY) — optional fallback, only works from
+ *      residential IPs since X blocks datacenter IPs for the cookie path.
+ *
+ * Deliberately exposes only reading. There is no code path to post, reply,
+ * like, follow, or DM.
  */
 
 import { Rettiwt } from "rettiwt-api";
 
-/** A single tweet flattened to the fields worth digesting. */
-export interface FeedTweet {
-  id: string;
-  author: string;
-  handle: string;
-  text: string;
-  createdAt: string;
-  url: string;
-  isRetweet: boolean;
-  isReply: boolean;
-  likeCount?: number;
-  retweetCount?: number;
-}
+import { fetchNitterTweets } from "./nitter.js";
+import { FeedFailure, FeedResult, FeedTweet } from "./types.js";
 
-export interface FeedSuccess {
-  ok: true;
-  handles: string[];
-  tweets: FeedTweet[];
-}
-
-export interface FeedFailure {
-  ok: false;
-  category: "invalid_input" | "auth" | "rate_limit" | "upstream" | "network";
-  message: string;
-}
-
-export type FeedResult = FeedSuccess | FeedFailure;
-
-/**
- * X search caps how many `from:` operators fit in one query, so handles are
- * fetched in small batches and merged. 5 is comfortably within the limit.
- */
-const BATCH_SIZE = 5;
-/** Tweets to request per batch before merging and trimming. */
-const PER_BATCH = 20;
+/** rettiwt caps `from:` operators per search query. */
+const RETTIWT_BATCH = 5;
+/** Tweets requested per rettiwt batch. */
+const RETTIWT_PER_BATCH = 20;
+/** Concurrent Nitter fetches — polite to the public instance. */
+const NITTER_CONCURRENCY = 4;
 
 export class XClient {
   private rettiwt?: Rettiwt;
 
   constructor(
-    private readonly apiKey: string,
+    private readonly apiKey: string | undefined,
     private readonly defaultHandles: string[] = [],
+    private readonly nitterInstances?: string[],
   ) {}
 
-  /**
-   * Build the Rettiwt instance lazily. Its constructor validates the API key and
-   * throws on an invalid/expired one, so this is only called inside the fetch
-   * try/catch, where the error is mapped to a clean "auth" failure rather than
-   * crashing the caller.
-   */
-  private client(): Rettiwt {
-    if (!this.rettiwt) {
-      this.rettiwt = new Rettiwt({ apiKey: this.apiKey });
-    }
+  /** Lazily construct rettiwt; its constructor throws on a bad key. */
+  private rettiwtClient(): Rettiwt {
+    if (!this.apiKey) throw new Error("no rettiwt api key configured");
+    if (!this.rettiwt) this.rettiwt = new Rettiwt({ apiKey: this.apiKey });
     return this.rettiwt;
   }
 
@@ -92,30 +65,97 @@ export class XClient {
     }
 
     const limit = Math.min(Math.max(1, Math.floor(count)), 100);
-    const batches: string[][] = [];
-    for (let i = 0; i < list.length; i += BATCH_SIZE) {
-      batches.push(list.slice(i, i + BATCH_SIZE));
+    const byId = new Map<string, FeedTweet>();
+    const missed: string[] = [];
+    const sources = new Set<string>();
+
+    // --- Source 1: Nitter RSS, a few handles at a time -----------------------
+    for (let i = 0; i < list.length; i += NITTER_CONCURRENCY) {
+      const group = list.slice(i, i + NITTER_CONCURRENCY);
+      const results = await Promise.all(
+        group.map(async (h) => ({
+          handle: h,
+          tweets: await fetchNitterTweets(h, this.nitterInstances),
+        })),
+      );
+      for (const r of results) {
+        if (r.tweets === null) {
+          missed.push(r.handle);
+          continue;
+        }
+        sources.add("nitter");
+        for (const t of r.tweets) {
+          if (t.isPinned) continue; // pinned posts are usually old
+          if (t.isReply && !includeReplies) continue;
+          byId.set(t.id, t);
+        }
+      }
     }
 
-    const byId = new Map<string, FeedTweet>();
-    let firstError: FeedFailure | undefined;
-    let succeeded = 0;
+    // --- Source 2: rettiwt fallback for handles Nitter missed ----------------
+    if (missed.length > 0 && this.apiKey) {
+      const stillMissed = await this.rettiwtFill(
+        missed,
+        byId,
+        includeReplies,
+      );
+      if (stillMissed.length < missed.length) sources.add("rettiwt");
+      missed.length = 0;
+      missed.push(...stillMissed);
+    }
 
-    for (const batch of batches) {
+    if (byId.size === 0) {
+      return {
+        ok: false,
+        category: "upstream",
+        message:
+          `No tweets could be fetched for any of the ${list.length} handle(s). ` +
+          (this.apiKey
+            ? "Both Nitter and the cookie session failed."
+            : "Nitter failed and no X_API_KEY fallback is configured."),
+      };
+    }
+
+    const tweets = [...byId.values()]
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+      .slice(0, limit);
+
+    return {
+      ok: true,
+      handles: list,
+      tweets,
+      source: [...sources].join("+") || "none",
+      missed,
+    };
+  }
+
+  /**
+   * Try to fill missed handles via the rettiwt cookie session.
+   * Mutates byId; returns the handles that still produced nothing.
+   */
+  private async rettiwtFill(
+    handles: string[],
+    byId: Map<string, FeedTweet>,
+    includeReplies: boolean,
+  ): Promise<string[]> {
+    const covered = new Set<string>();
+    for (let i = 0; i < handles.length; i += RETTIWT_BATCH) {
+      const batch = handles.slice(i, i + RETTIWT_BATCH);
       try {
-        const data = await this.client().tweet.search(
+        const data = await this.rettiwtClient().tweet.search(
           { fromUsers: batch },
-          PER_BATCH,
+          RETTIWT_PER_BATCH,
         );
-        succeeded += 1;
         for (const t of data.list ?? []) {
           const isReply =
             Boolean(t.replyTo) || /^@\w/.test((t.fullText ?? "").trim());
           if (isReply && !includeReplies) continue;
+          const handle = t.tweetBy?.userName ?? "unknown";
+          covered.add(handle.toLowerCase());
           byId.set(t.id, {
             id: t.id,
-            author: t.tweetBy?.fullName ?? t.tweetBy?.userName ?? "unknown",
-            handle: t.tweetBy?.userName ?? "unknown",
+            author: t.tweetBy?.fullName ?? handle,
+            handle,
             text: t.fullText ?? "",
             createdAt: t.createdAt,
             url: t.url ?? `https://x.com/i/status/${t.id}`,
@@ -125,68 +165,31 @@ export class XClient {
             retweetCount: t.retweetCount,
           });
         }
-      } catch (err) {
-        const mapped = this.mapError(err);
-        // Auth failure is terminal (dead cookie): stop and report immediately.
-        if (mapped.category === "auth") return mapped;
-        if (!firstError) firstError = mapped;
+      } catch {
+        // fallback failure is non-fatal; these handles stay missed
       }
     }
-
-    if (succeeded === 0) {
-      return firstError ?? {
-        ok: false,
-        category: "upstream",
-        message: "All handle batches failed to fetch.",
-      };
-    }
-
-    const tweets = [...byId.values()]
-      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-      .slice(0, limit);
-
-    return { ok: true, handles: list, tweets };
+    return handles.filter((h) => !covered.has(h.toLowerCase()));
   }
 
-  /** Map a rettiwt/network error to a categorised, secret-free failure. */
-  private mapError(err: unknown): FeedFailure {
+  /** Kept for callers that need a categorised failure from a raw error. */
+  static mapError(err: unknown): FeedFailure {
     const message = err instanceof Error ? err.message : String(err);
     const lower = message.toLowerCase();
-
     if (
       lower.includes("unauthor") ||
       lower.includes("authenticat") ||
       lower.includes("forbidden") ||
-      lower.includes("login") ||
       lower.includes("session")
     ) {
-      return {
-        ok: false,
-        category: "auth",
-        message:
-          "X session appears invalid or expired. Log into the dedicated " +
-          "account again, re-generate X_API_KEY from fresh cookies, and update " +
-          "it in the environment.",
-      };
+      return { ok: false, category: "auth", message };
     }
-    if (lower.includes("rate") || lower.includes("429") || lower.includes("too many")) {
-      return {
-        ok: false,
-        category: "rate_limit",
-        message: `Rate limited by X. Try again later. (${message})`,
-      };
+    if (lower.includes("rate") || lower.includes("429")) {
+      return { ok: false, category: "rate_limit", message };
     }
-    if (lower.includes("network") || lower.includes("fetch") || lower.includes("timeout")) {
-      return {
-        ok: false,
-        category: "network",
-        message: `Network error reaching X: ${message}`,
-      };
+    if (lower.includes("network") || lower.includes("timeout")) {
+      return { ok: false, category: "network", message };
     }
-    return {
-      ok: false,
-      category: "upstream",
-      message: `Failed to fetch tweets: ${message}`,
-    };
+    return { ok: false, category: "upstream", message };
   }
 }

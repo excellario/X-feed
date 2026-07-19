@@ -54,27 +54,29 @@ async function probeFetch(
  * Run all probes and return their results.
  * @param apiKey the rettiwt cookie key, to test the authenticated path too
  */
-export async function runProbes(apiKey: string): Promise<ProbeCheck[]> {
+export async function runProbes(apiKey?: string): Promise<ProbeCheck[]> {
   const checks: ProbeCheck[] = [];
 
   // 1. Egress IP identity, so we know what X sees.
   checks.push(await probeFetch("egress-ip", "https://api.ipify.org?format=json"));
 
-  // 2. rettiwt cookie-auth search (the current production path).
-  try {
-    const rettiwt = new Rettiwt({ apiKey });
-    const data = await rettiwt.tweet.search({ fromUsers: ["OpenAI"] }, 3);
-    checks.push({
-      name: "rettiwt-search",
-      ok: true,
-      detail: `fetched ${data.list?.length ?? 0} tweets`,
-    });
-  } catch (err) {
-    checks.push({
-      name: "rettiwt-search",
-      ok: false,
-      detail: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
-    });
+  // 2. rettiwt cookie-auth search (optional fallback path).
+  if (apiKey) {
+    try {
+      const rettiwt = new Rettiwt({ apiKey });
+      const data = await rettiwt.tweet.search({ fromUsers: ["OpenAI"] }, 3);
+      checks.push({
+        name: "rettiwt-search",
+        ok: true,
+        detail: `fetched ${data.list?.length ?? 0} tweets`,
+      });
+    } catch (err) {
+      checks.push({
+        name: "rettiwt-search",
+        ok: false,
+        detail: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+      });
+    }
   }
 
   // 3. Syndication timeline (no auth) — powers embedded profile timelines.
@@ -98,10 +100,22 @@ export async function runProbes(apiKey: string): Promise<ProbeCheck[]> {
     await probeFetch("fxtwitter-user", "https://api.fxtwitter.com/OpenAI"),
   );
 
-  // 6. Nitter flagship instance RSS (no auth) — full timeline as RSS.
-  checks.push(
-    await probeFetch("nitter-net-rss", "https://nitter.net/OpenAI/rss"),
-  );
+  // 6. Nitter instances RSS (no auth) — which serve items to THIS IP?
+  const instances = [
+    "nitter.net",
+    "xcancel.com",
+    "nitter.privacyredirect.com",
+    "lightbrd.com",
+    "nitter.tiekoetter.com",
+    "nitter.kavin.rocks",
+    "nuku.trabun.org",
+    "nitter.poast.org",
+  ];
+  for (const inst of instances) {
+    checks.push(
+      await probeFetch(`nitter:${inst}`, `https://${inst}/OpenAI/rss`),
+    );
+  }
 
   return checks;
 }
