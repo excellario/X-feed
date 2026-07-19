@@ -32,11 +32,14 @@ async function probeFetch(
       signal: AbortSignal.timeout(15000),
     });
     const text = await res.text();
+    const items = (text.match(/<item>/g) ?? []).length;
     return {
       name,
       ok: res.ok,
       status: res.status,
-      detail: text.slice(0, 160).replace(/\s+/g, " "),
+      detail:
+        `len=${text.length} items=${items} :: ` +
+        text.slice(0, 140).replace(/\s+/g, " "),
     };
   } catch (err) {
     return {
