@@ -95,5 +95,10 @@ export async function runProbes(apiKey: string): Promise<ProbeCheck[]> {
     await probeFetch("fxtwitter-user", "https://api.fxtwitter.com/OpenAI"),
   );
 
+  // 6. Nitter flagship instance RSS (no auth) — full timeline as RSS.
+  checks.push(
+    await probeFetch("nitter-net-rss", "https://nitter.net/OpenAI/rss"),
+  );
+
   return checks;
 }
